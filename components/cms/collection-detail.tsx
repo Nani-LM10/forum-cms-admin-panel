@@ -24,6 +24,7 @@ import {
   Key,
   GripVertical,
   Copy,
+  Cloud,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -61,11 +62,13 @@ interface CollectionDetailProps {
   onAddItem: () => void
   onEditItem: (item: CollectionItem) => void
   onDeleteItem: (item: CollectionItem) => void
+  onBulkDeleteItems?: (itemIds: string[]) => Promise<void>
   onManageFields: () => void
   onAddField: () => void
   onQuickAdd?: () => void
   onInlineUpdate?: (item: CollectionItem, key: string, value: unknown) => Promise<void>
   onImportItems?: (items: Record<string, unknown>[]) => Promise<void>
+  onSaveToCloudflare?: () => Promise<void>
 }
 
 const fieldTypeIcons: Record<string, React.ReactNode> = {
@@ -87,16 +90,19 @@ export function CollectionDetail({
   onAddItem,
   onEditItem,
   onDeleteItem,
+  onBulkDeleteItems,
   onManageFields,
   onAddField,
   onQuickAdd,
   onInlineUpdate,
   onImportItems,
+  onSaveToCloudflare,
 }: CollectionDetailProps) {
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedItems, setSelectedItems] = useState<string[]>([])
   const [activeView, setActiveView] = useState("default")
   const [editingCell, setEditingCell] = useState<{ itemId: string; fieldKey: string } | null>(null)
+  const [isSyncing, setIsSyncing] = useState(false)
   const importInputRef = React.useRef<HTMLInputElement>(null)
 
   // Focus input when editing starts
@@ -269,6 +275,17 @@ export function CollectionDetail({
     reader.readAsText(file)
   }
 
+  const handleSaveToCloudflare = async () => {
+    if (!onSaveToCloudflare) return
+
+    setIsSyncing(true)
+    try {
+      await onSaveToCloudflare()
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-4">
       <input
@@ -318,6 +335,15 @@ export function CollectionDetail({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <Button
+            variant="outline"
+            className="gap-2 bg-transparent"
+            onClick={handleSaveToCloudflare}
+            disabled={isSyncing || !onSaveToCloudflare}
+          >
+            <Cloud className={`h-4 w-4 ${isSyncing ? 'animate-pulse' : ''}`} />
+            {isSyncing ? 'Syncing...' : 'Save to Cloudflare'}
+          </Button>
           <Button onClick={onAddItem} className="gap-2">
             <Plus className="h-4 w-4" />
             Add Item
@@ -418,12 +444,18 @@ export function CollectionDetail({
           <Button
             variant="destructive"
             size="sm"
-            onClick={() => {
-              selectedItems.forEach((id) => {
-                const item = items.find((i) => i.id === id)
-                if (item) onDeleteItem(item)
-              })
-              setSelectedItems([])
+            onClick={async () => {
+              if (onBulkDeleteItems) {
+                await onBulkDeleteItems(selectedItems)
+                setSelectedItems([])
+              } else {
+                // Fallback: delete items one by one
+                selectedItems.forEach((id) => {
+                  const item = items.find((i) => i.id === id)
+                  if (item) onDeleteItem(item)
+                })
+                setSelectedItems([])
+              }
             }}
           >
             <Trash2 className="mr-2 h-4 w-4" />
@@ -452,7 +484,7 @@ export function CollectionDetail({
                     <div className="flex items-center gap-2">
                       <span className="text-muted-foreground">{fieldTypeIcons[field.type]}</span>
                       <span>{field.name}</span>
-                      {field.isPrimary && <Key className="h-3 w-3 text-amber-500" title="Primary field" />}
+                      {field.isPrimary && <Key className="h-3 w-3 text-amber-500" />}
                     </div>
                   </TableHead>
                 ))}

@@ -266,15 +266,58 @@ export default function CMSPage() {
 
   const handleDeleteItem = async () => {
     if (!deletingItem) return
-    const response = await fetch(`/api/items/${deletingItem.id}`, {
-      method: "DELETE",
-    })
-    if (response.ok) {
+
+    try {
+      const response = await fetch(`/api/items/${deletingItem.id}`, {
+        method: "DELETE",
+      })
+
+      if (!response.ok) throw new Error("Failed to delete item")
+
       setCollectionItems(collectionItems.filter((item) => item.id !== deletingItem.id))
       mutate("/api/collections")
       toast.success("Item deleted successfully")
+    } catch (error) {
+      toast.error("Failed to delete item")
+      console.error("Item delete error:", error)
+    } finally {
+      setDeletingItem(null)
     }
-    setDeletingItem(null)
+  }
+
+  const handleBulkDeleteItems = async (itemIds: string[]) => {
+    try {
+      // Delete all items in parallel
+      const deletePromises = itemIds.map((id) =>
+        fetch(`/api/items/${id}`, {
+          method: "DELETE",
+        })
+      )
+
+      const responses = await Promise.all(deletePromises)
+
+      // Check if any deletions failed
+      const failedCount = responses.filter((r) => !r.ok).length
+
+      if (failedCount > 0) {
+        throw new Error(`Failed to delete ${failedCount} item(s)`)
+      }
+
+      // Update local state to remove deleted items
+      setCollectionItems(collectionItems.filter((item) => !itemIds.includes(item.id)))
+      mutate("/api/collections")
+      toast.success(`${itemIds.length} item(s) deleted successfully`)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete items")
+      console.error("Bulk delete error:", error)
+
+      // Refresh items to get current state from server
+      const itemsRes = await fetch(`/api/collections/${selectedCollection?.id}/items`)
+      if (itemsRes.ok) {
+        const refreshedItems = await itemsRes.json()
+        setCollectionItems(refreshedItems)
+      }
+    }
   }
 
   const handleAddField = async (field: Omit<Field, "id">) => {
@@ -298,16 +341,89 @@ export default function CMSPage() {
 
   const handleUpdateField = async (fieldId: string, data: Partial<Field>) => {
     if (!selectedCollection) return
+
+    // Optimistic update
+    const previousFields = selectedCollection.fields
     const updatedFields = selectedCollection.fields.map((f) => (f.id === fieldId ? { ...f, ...data } : f))
     setSelectedCollection({ ...selectedCollection, fields: updatedFields })
-    toast.success("Field updated successfully")
+
+    try {
+      const response = await fetch(`/api/collections/${selectedCollection.id}/fields/${fieldId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      })
+
+      if (!response.ok) throw new Error("Failed to update field")
+
+      // Refresh collection data
+      mutate("/api/collections")
+      toast.success("Field updated successfully")
+    } catch (error) {
+      // Revert on failure
+      setSelectedCollection({ ...selectedCollection, fields: previousFields })
+      toast.error("Failed to update field")
+      console.error("Field update error:", error)
+    }
   }
 
   const handleDeleteField = async (fieldId: string) => {
     if (!selectedCollection) return
+
+    // Optimistic update
+    const previousFields = selectedCollection.fields
     const updatedFields = selectedCollection.fields.filter((f) => f.id !== fieldId)
     setSelectedCollection({ ...selectedCollection, fields: updatedFields })
-    toast.success("Field deleted successfully")
+
+    try {
+      const response = await fetch(`/api/collections/${selectedCollection.id}/fields/${fieldId}`, {
+        method: "DELETE",
+      })
+
+      if (!response.ok) throw new Error("Failed to delete field")
+
+      // Refresh collection data and items (field data will be removed from items)
+      mutate("/api/collections")
+
+      // Refresh items to reflect field removal
+      const itemsRes = await fetch(`/api/collections/${selectedCollection.id}/items`)
+      if (itemsRes.ok) {
+        const refreshedItems = await itemsRes.json()
+        setCollectionItems(refreshedItems)
+      }
+
+      toast.success("Field deleted successfully")
+    } catch (error) {
+      // Revert on failure
+      setSelectedCollection({ ...selectedCollection, fields: previousFields })
+      toast.error("Failed to delete field")
+      console.error("Field delete error:", error)
+    }
+  }
+
+  const handleSaveToCloudflare = async () => {
+    if (!selectedCollection) return
+
+    try {
+      // Import the Cloudflare service
+      const { syncCollectionToCloudflare } = await import("@/lib/cloudflare-service")
+
+      // Perform the sync
+      const result = await syncCollectionToCloudflare(selectedCollection, collectionItems)
+
+      if (result.success) {
+        toast.success(result.message)
+      } else {
+        toast.error(result.message, {
+          description: result.error?.details || result.error?.message,
+        })
+      }
+    } catch (error) {
+      console.error("Cloudflare sync error:", error)
+      toast.error("Failed to sync to Cloudflare", {
+        description: error instanceof Error ? error.message : "Unknown error",
+      })
+    }
   }
 
   if (isLoading) {
@@ -352,6 +468,7 @@ export default function CMSPage() {
               setShowItemEditor(true)
             }}
             onDeleteItem={(item) => setDeletingItem(item)}
+            onBulkDeleteItems={handleBulkDeleteItems}
             onManageFields={() => setShowFieldManager(true)}
             onAddField={() => setShowFieldManager(true)}
             onQuickAdd={async () => {
@@ -385,27 +502,32 @@ export default function CMSPage() {
               const updatedData = { ...item.data, [fieldKey]: value }
 
               // Optimistic update
+              const previousItems = [...collectionItems]
               setCollectionItems(collectionItems.map((i) =>
                 i.id === item.id ? { ...i, data: updatedData } : i
               ))
 
-              const response = await fetch(`/api/items/${item.id}`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(updatedData),
-              })
+              try {
+                const response = await fetch(`/api/items/${item.id}`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(updatedData),
+                })
 
-              if (response.ok) {
+                if (!response.ok) throw new Error("Failed to update item")
+
                 const serverUpdated = await response.json()
                 // Confirm update with server data
-                setCollectionItems(collectionItems.map((i) =>
-                  i.id === item.id ? serverUpdated : i
-                ))
+                setCollectionItems(prevItems =>
+                  prevItems.map((i) => i.id === item.id ? serverUpdated : i)
+                )
+                mutate("/api/collections")
                 toast.success("Item updated")
-              } else {
+              } catch (error) {
                 // Revert on failure
-                setCollectionItems(collectionItems)
+                setCollectionItems(previousItems)
                 toast.error("Failed to update item")
+                console.error("Item update error:", error)
               }
             }}
             onImportItems={async (items) => {
@@ -468,6 +590,7 @@ export default function CMSPage() {
                 toast.error("Failed to import items")
               }
             }}
+            onSaveToCloudflare={handleSaveToCloudflare}
           />
         ) : (
           <div className="space-y-8 overflow-y-auto flex-1">

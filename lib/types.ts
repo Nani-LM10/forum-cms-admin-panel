@@ -31,3 +31,23 @@ export interface CMSStats {
   itemLimit: number
   totalCollections: number
 }
+
+// Cloudflare D1 Integration Types
+export interface CloudflareConfig {
+  accountId: string
+  databaseId: string
+  apiToken: string
+}
+
+export interface CloudflareSyncResult {
+  success: boolean
+  message: string
+  recordsInserted?: number
+  error?: CloudflareSyncError
+}
+
+export interface CloudflareSyncError {
+  code: string
+  message: string
+  details?: string
+}
